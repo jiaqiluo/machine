@@ -128,7 +128,7 @@ func (d *Driver) removeCloudInitIso(vm *object.VirtualMachine, dc *object.Datace
 
 func (d *Driver) createCloudInitIso() error {
 	log.Infof("Creating cloud-init.iso")
-	//d.CloudConfig stat'ed and loaded in flag load.
+	// d.CloudConfig stat'ed and loaded in flag load.
 	sshkey, err := ioutil.ReadFile(d.publicSSHKeyPath())
 	if err != nil {
 		return err
@@ -162,17 +162,23 @@ func (d *Driver) createCloudInitIso() error {
 
 	// validate that our files are present in the isoDir before creating the ISO
 	for filename, filepath := range map[string]string{"user-data": userdata, "meta-data": metadata} {
+		log.Debugf("createCloudInitIso: checking the file [%s] at [%s]", filename, filepath)
 		_, err = os.Stat(filepath)
 		if err != nil {
 			return fmt.Errorf("error: %s found when verifying that %s file was present for machine %s", err, filename, d.MachineName)
 		}
 	}
 
-	err = os.Chdir(filepath.Join(d.StorePath, "machines", d.MachineName))
-	if err != nil {
-		return err
-	}
+	s, _ := os.Getwd()
+	log.Debugf("createCloudInitIso: current directory before chdir: %s", s)
 
+	// err = os.Chdir(filepath.Join(d.StorePath, "machines", d.MachineName))
+	// if err != nil {
+	// 	return err
+	// }
+
+	s, _ = os.Getwd()
+	log.Debugf("createCloudInitIso: current directory after chdir: %s", s)
 	diskImg := filepath.Join(isoDir, isoName)
 
 	// making iso
@@ -183,7 +189,7 @@ func (d *Driver) createCloudInitIso() error {
 		return fmt.Errorf("createCloudInitIso: path lookup for %s failed: %v", mkisofsName, err)
 	}
 
-	isoArgs := []string{"-J", "-r", "-hfs", "-iso-level", "1", "-V", "cidata", "-output",
+	isoArgs := []string{"-debug", "-J", "-r", "-hfs", "-iso-level", "1", "-V", "cidata", "-output",
 		fmt.Sprintf("%s", diskImg), "-graft-points", fmt.Sprintf("%s", dataDir)}
 	iso := exec.Command(path, isoArgs...)
 	iso.Env = []string{
@@ -191,6 +197,8 @@ func (d *Driver) createCloudInitIso() error {
 	}
 	iso.Stdout = os.Stdout
 	iso.Stderr = os.Stderr
+	log.Debugf("createCloudInitIso: about to run command: %s", iso.String())
+	log.Debugf("createCloudInitIso: about to run PATH: %s", os.Getenv("PATH"))
 	err = iso.Start()
 	if err != nil {
 		return fmt.Errorf("createCloudInitIso: mkisofs command failed to start with error %v", err)
