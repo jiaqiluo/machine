@@ -198,4 +198,4 @@ jobs:
       - name: (for testing) check files
         run: ls -l /tmp/assets
       - name: Create GH release
-        run: gh release create ${{ steps.meta.outputs.version }} --verify-tag --generate-notes /tmp/assets/rancher-machine-*.tar.gz
+        run: gh release create ${{ github.ref_name }} --verify-tag --generate-notes /tmp/assets/rancher-machine-*.tar.gz
