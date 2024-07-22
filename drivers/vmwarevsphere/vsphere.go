@@ -453,6 +453,7 @@ func (d *Driver) Kill() error {
 func (d *Driver) Remove() error {
 	if d.MachineId == "" {
 		// no guid from config, nothing in vsphere to delete
+		log.Infof("no machineID is found for remote instance %s", d.MachineName)
 		return nil
 	}
 

@@ -274,6 +274,11 @@ func (d *Driver) createFromVmName() error {
 		return err
 	}
 
+	if _, err = d.GetMachineId(); err != nil {
+		// no need to return the error, it is not a blocker for creating the machine
+		log.Warnf("[createFromVmName] failed to set MachineID for %s: %v", d.MachineName, err)
+	}
+
 	// Retrieve the new VM
 	vm := object.NewVirtualMachine(c.Client, info.Result.(types.ManagedObjectReference))
 	if err := d.addNetworks(vm, d.networks); err != nil {
