@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/rancher/machine/libmachine/drivers"
 	"github.com/rancher/machine/libmachine/log"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
@@ -144,29 +145,36 @@ func (d *Driver) createLegacy() error {
 	if err != nil {
 		return err
 	}
+	log.Info("Fetching MachineID ...")
+	// save the machine id as soon as the VM is created
+	if _, err = d.GetMachineId(); err != nil {
+		// no need to return the error, it is not a blocker for creating the machine,
+		// we will fetch the machineID again after starting the VM
+		log.Warnf("[createLegacy] failed to fetch MachineID for %s: %v", d.MachineName, err)
+	}
 
 	log.Infof("Uploading Boot2docker ISO ...")
 	vm := object.NewVirtualMachine(c.Client, info.Result.(types.ManagedObjectReference))
 	vmPath, err := d.getVmFolder(vm)
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	dsurl := ds.NewURL(filepath.Join(vmPath, isoFilename))
 	p := soap.DefaultUpload
 	if err = c.Client.UploadFile(d.getCtx(), d.ISO, dsurl, &p); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	devices, err := vm.Device(d.getCtx())
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	var add []types.BaseVirtualDevice
 	controller, err := devices.FindDiskController("scsi")
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	disk := devices.CreateDisk(controller, ds.Reference(),
@@ -177,30 +185,31 @@ func (d *Driver) createLegacy() error {
 	add = append(add, disk)
 	ide, err := devices.FindIDEController("")
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	cdrom, err := devices.CreateCdrom(ide)
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	add = append(add, devices.InsertIso(cdrom, ds.Path(fmt.Sprintf("%s/%s", vmPath, isoFilename))))
 	if err := vm.AddDevice(d.getCtx(), add...); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	if err := d.addNetworks(vm, d.networks); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	err = d.postCreate(vm)
 	if err != nil {
-		return err
+		log.Info("======= failed at post create")
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	if err := d.provisionVm(vm); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	return nil
@@ -274,18 +283,29 @@ func (d *Driver) createFromVmName() error {
 		return err
 	}
 
+	log.Info("Fetching MachineID ...")
+	// save the machine id as soon as the VM is created
+	if _, err = d.GetMachineId(); err != nil {
+		// no need to return the error, it is not a blocker for creating the machine,
+		// we will fetch the machineID again after starting the VM
+		log.Warnf("[createFromVmName] failed to fetch MachineID for %s: %v", d.MachineName, err)
+	}
+
 	// Retrieve the new VM
 	vm := object.NewVirtualMachine(c.Client, info.Result.(types.ManagedObjectReference))
 	if err := d.addNetworks(vm, d.networks); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	if err := d.resizeDisk(vm); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	log.Debugf("[createFromVmName] machine [%s] has OS [%s]", d.MachineName, d.OS)
-	return d.postCreate(vm)
+	if err := d.postCreate(vm); err != nil {
+		return drivers.ErrResourcesCreated(err.Error())
+	}
+	return nil
 }
 
 func (d *Driver) createFromLibraryName() error {
@@ -354,7 +374,15 @@ func (d *Driver) createFromLibraryName() error {
 
 	obj, err := d.finder.ObjectReference(d.getCtx(), *ref)
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
+	}
+
+	log.Info("Fetching MachineID ...")
+	// save the machine id as soon as the VM is created
+	if _, err = d.GetMachineId(); err != nil {
+		// no need to return the error, it is not a blocker for creating the machine,
+		// we will fetch the machineID again after starting the VM
+		log.Warnf("[createFromLibraryName] failed to fetch MachineID for %s: %v", d.MachineName, err)
 	}
 
 	// At this point, the VM is deployed from content library with defaults from template
@@ -371,21 +399,24 @@ func (d *Driver) createFromLibraryName() error {
 
 	task, err := vm.Reconfigure(d.getCtx(), spec)
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	err = task.Wait(d.getCtx())
 	if err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	if err := d.resizeDisk(vm); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
 	if err := d.addNetworks(vm, d.networks); err != nil {
-		return err
+		return drivers.ErrResourcesCreated(err.Error())
 	}
 
-	return d.postCreate(vm)
+	if err := d.postCreate(vm); err != nil {
+		return drivers.ErrResourcesCreated(err.Error())
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package libmachine
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -136,6 +137,15 @@ func (api *Client) Create(h *host.Host) error {
 	log.Info("Creating machine...")
 
 	if err := api.performCreate(h); err != nil {
+		var errResourcesCreated drivers.ErrResourcesCreated
+		if errors.As(err, &errResourcesCreated) {
+			// it is possible that the VM is instantiated but fails to bootstrap,
+			// save the machine to the store, so the VM and associated resources can be found and destroyed later
+			log.Infof("===== detect ErrResourcesCreated")
+			if err := api.Save(h); err != nil {
+				log.Warnf("Error saving host to store after creation fails: %s", err)
+			}
+		}
 		return fmt.Errorf("Error creating machine: %s", err)
 	}
 
@@ -146,7 +156,10 @@ func (api *Client) Create(h *host.Host) error {
 
 func (api *Client) performCreate(h *host.Host) error {
 	if err := h.Driver.Create(); err != nil {
-		return fmt.Errorf("Error in driver during machine creation: %s", err)
+		if _, ok := err.(drivers.ErrResourcesCreated); ok {
+			log.Infof("==== conmfrim the error returnned from creat is ErrResourcesCreated")
+		}
+		return fmt.Errorf("Error in driver during machine creation: %w", err)
 	}
 
 	if err := api.Save(h); err != nil {
