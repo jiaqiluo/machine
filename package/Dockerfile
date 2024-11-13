@@ -33,7 +33,7 @@ COPY --from=builder /chroot /
 RUN mkdir -p .docker/machine/machines /etc/rancher/ssl /home/machine && \
     chown -R machine /etc/rancher/ssl && \
     chown -R machine /home/machine && \
-    chown -R machine /usr/local/bin
+    chown machine /usr/local/bin
 
 USER 1000
 
