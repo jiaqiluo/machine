@@ -12,9 +12,9 @@ if [ -x "$(command -v c_rehash)" ]; then
   c_rehash
 fi
 
-if ! curl -sLO "$1"; then
-  echo "failed to download the driver, exit code: " + $?
-fi
+#curl -sLO "$1"
+curl -vLO "$1"
+
 echo "========== env ========="
 env
 echo "========== home ========="
