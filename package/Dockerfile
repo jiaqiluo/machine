@@ -36,4 +36,6 @@ RUN mkdir -p .docker/machine/machines /etc/rancher/ssl /home/machine && \
 
 USER 1000
 
+WORKDIR /home/machine
+
 ENTRYPOINT ["entrypoint.sh"]

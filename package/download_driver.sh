@@ -19,10 +19,14 @@ echo "========== env ========="
 env
 echo "========== home ========="
 home
+echo "========== cat /etc/passwd ========="
+cat /etc/passwd
+echo "========== whoami ========="
+whoami
 echo "========== pwd ========="
 pwd
 echo "========== ls ========="
-ls -lR /
+ls -laR /
 echo "========== done ========="
 
 driver_file=$(ls $driver_prefix*)
