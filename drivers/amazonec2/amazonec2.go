@@ -34,6 +34,7 @@ import (
 const (
 	driverName                  = "amazonec2"
 	ipRange                     = "0.0.0.0/0"
+	ip6Range                    = "::/0"
 	machineSecurityGroupName    = "rancher-nodes"
 	machineTag                  = "rancher-nodes"
 	defaultAmiId                = "ami-c60b90d1"
@@ -84,6 +85,7 @@ var (
 	errorReadingUserData                       = errors.New("unable to read --amazonec2-userdata file")
 	errorInvalidValueForHTTPToken              = errors.New("httpToken must be either optional or required")
 	errorInvalidValueForHTTPEndpoint           = errors.New("httpEndpoint must be either enabled or disabled")
+	errorInvalidValueForHTTPProtocolIpv6       = errors.New("httpProtocolIpv6 must be either enabled or disabled")
 )
 
 type Driver struct {
@@ -144,6 +146,16 @@ type Driver struct {
 	// Metadata Options
 	HttpEndpoint string
 	HttpTokens   string
+
+	// Enables or disables the IPv6 endpoint for the instance metadata service.
+	// Options: enabled, disabled
+	HttpProtocolIpv6 string
+
+	// Indicates whether to assign a public IPv6 address to an instance you launch in a VPC.
+	PrimaryIpv6 bool
+
+	// The number of IPv6 addresses to assign to the network interface.
+	Ipv6AddressCount int64
 }
 
 func (d *Driver) GetCreateFlags() []mcnflag.Flag {
@@ -325,6 +337,23 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "The state of token usage for your instance metadata requests.",
 			EnvVar: "AWS_HTTP_TOKENS",
 		},
+		mcnflag.StringFlag{
+			Name:   "amazonec2-http-protocol-ipv6",
+			Usage:  "Enables or disables the IPv6 endpoint for the instance metadata service. Options: enabled, disabled (default).",
+			EnvVar: "AWS_HTTP_PROTOCOL_IPV6",
+			Value:  "disabled",
+		},
+		mcnflag.IntFlag{
+			Name:   "amazonec2-ipv6-address-count",
+			Usage:  "The number of IPv6 addresses to assign to the network interface (default: 0).",
+			EnvVar: "AWS_IPV6_ADDRESS_COUNT",
+			Value:  0,
+		},
+		mcnflag.BoolFlag{
+			Name:   "amazonec2-primary-ipv6",
+			Usage:  "Indicates whether to assign a public IPv6 address to an instance you launch in a VPC.",
+			EnvVar: "AWS_PRIMARY_IPV6",
+		},
 	}
 }
 
@@ -444,6 +473,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHPort = 22
 	d.PrivateIPOnly = flags.Bool("amazonec2-private-address-only")
 	d.UsePrivateIP = flags.Bool("amazonec2-use-private-address")
+	d.Ipv6AddressCount = int64(flags.Int("amazonec2-ipv6-address-count"))
+	d.PrimaryIpv6 = flags.Bool("amazonec2-primary-ipv6")
 	d.Monitoring = flags.Bool("amazonec2-monitoring")
 	d.UseEbsOptimizedInstance = flags.Bool("amazonec2-use-ebs-optimized-instance")
 	d.SSHPrivateKeyPath = flags.String("amazonec2-ssh-keypath")
@@ -469,6 +500,14 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			return errorInvalidValueForHTTPToken
 		}
 		d.HttpTokens = httpTokens
+	}
+
+	httpProtocolIpv6 := flags.String("amazonec2-http-protocol-ipv6")
+	if httpProtocolIpv6 != "" {
+		if httpProtocolIpv6 != "disabled" && httpProtocolIpv6 != "enabled" {
+			return errorInvalidValueForHTTPProtocolIpv6
+		}
+		d.HttpProtocolIpv6 = httpProtocolIpv6
 	}
 
 	kmskeyid := flags.String("amazonec2-kms-key")
@@ -716,6 +755,8 @@ func (d *Driver) innerCreate() error {
 		Groups:                   makePointerSlice(d.securityGroupIds()),
 		SubnetId:                 &d.SubnetId,
 		AssociatePublicIpAddress: aws.Bool(!d.PrivateIPOnly),
+		PrimaryIpv6:              aws.Bool(d.PrimaryIpv6),
+		Ipv6AddressCount:         aws.Int64(d.Ipv6AddressCount),
 	}}
 
 	regionZone := d.getRegionZone()
@@ -756,6 +797,10 @@ func (d *Driver) innerCreate() error {
 
 		if d.HttpTokens != "" {
 			req.MetadataOptions.HttpTokens = aws.String(d.HttpTokens)
+		}
+
+		if d.HttpProtocolIpv6 != "" {
+			req.MetadataOptions.HttpProtocolIpv6 = aws.String(d.HttpProtocolIpv6)
 		}
 
 		if d.BlockDurationMinutes != 0 {
@@ -854,6 +899,10 @@ func (d *Driver) innerCreate() error {
 			req.MetadataOptions.HttpTokens = aws.String(d.HttpTokens)
 		}
 
+		if d.HttpProtocolIpv6 != "" {
+			req.MetadataOptions.HttpProtocolIpv6 = aws.String(d.HttpProtocolIpv6)
+		}
+
 		res, err := d.getClient().RunInstances(&req)
 
 		if err != nil {
@@ -943,6 +992,9 @@ func (d *Driver) GetIP() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	log.Info("====== String ====")
+	log.Info(inst.String())
+	log.Info("====== Done ====")
 
 	if d.PrivateIPOnly {
 		if inst.PrivateIpAddress == nil {
@@ -1349,13 +1401,48 @@ func (d *Driver) configureSecurityGroups(groupNames []string) error {
 		}
 
 		if len(inboundPerms) != 0 {
-			log.Debugf("authorizing group %s with inbound permissions: %v", groupNames, inboundPerms)
+			log.Debugf("authorizing the security group %s with inbound permissions: %v", groupNames, inboundPerms)
 			_, err := d.getClient().AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 				GroupId:       group.GroupId,
 				IpPermissions: inboundPerms,
 			})
-			if err != nil && !strings.Contains(err.Error(), "already exists") {
-				return err
+			if err != nil {
+				if !strings.Contains(err.Error(), "already exists") {
+					return err
+				}
+				log.Debugf("skip authorizing the security group %s as it already exists", groupNames)
+			}
+
+			outboundPerms := []*ec2.IpPermission{
+				// v4
+				{
+					IpProtocol: aws.String("-1"),
+					IpRanges: []*ec2.IpRange{
+						{
+							CidrIp: aws.String(ipRange),
+						},
+					},
+				},
+				// v6
+				{
+					IpProtocol: aws.String("-1"),
+					Ipv6Ranges: []*ec2.Ipv6Range{
+						{
+							CidrIpv6: aws.String(ip6Range),
+						},
+					},
+				},
+			}
+			log.Debugf("authorizing the security group %s with outbound permissions: %v", groupNames, outboundPerms)
+			_, err = d.getClient().AuthorizeSecurityGroupEgress(&ec2.AuthorizeSecurityGroupEgressInput{
+				GroupId:       group.GroupId,
+				IpPermissions: outboundPerms,
+			})
+			if err != nil {
+				if !strings.Contains(err.Error(), "already exists") {
+					return err
+				}
+				log.Debugf("skip authorizing the security group %s as it already exists", groupNames)
 			}
 		}
 
@@ -1369,56 +1456,64 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		log.Debug("Skipping permission configuration on security groups")
 		return nil, nil
 	}
-	hasPortsInbound := make(map[string]struct{})
+
+	hasV4Inbound := map[string]struct{}{}
+	hasV6Inbound := map[string]struct{}{}
+
 	for _, p := range group.IpPermissions {
-		if p.FromPort != nil {
-			hasPortsInbound[fmt.Sprintf("%d/%s", *p.FromPort, *p.IpProtocol)] = struct{}{}
+		if p.FromPort == nil || p.IpProtocol == nil {
+			continue
+		}
+		key := fmt.Sprintf("%d/%s", *p.FromPort, *p.IpProtocol)
+		// v4
+		if len(p.IpRanges) > 0 {
+			hasV4Inbound[key] = struct{}{}
+		}
+		// v6
+		if len(p.Ipv6Ranges) > 0 {
+			hasV6Inbound[key] = struct{}{}
 		}
 	}
 
-	inboundPerms := []*ec2.IpPermission{}
+	var inboundPerms []*ec2.IpPermission
+
+	// Helper to add dual-stack internet-facing rules
+	addDualStack := func(proto string, from, to int64) {
+		key := fmt.Sprintf("%d/%s", from, proto)
+		// IPv4
+		if _, ok := hasV4Inbound[key]; !ok {
+			inboundPerms = append(inboundPerms, &ec2.IpPermission{
+				IpProtocol: aws.String(proto),
+				FromPort:   aws.Int64(from),
+				ToPort:     aws.Int64(to),
+				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}}, // existing ipRange
+			})
+		}
+		// IPv6
+		if _, ok := hasV6Inbound[key]; !ok {
+			inboundPerms = append(inboundPerms, &ec2.IpPermission{
+				IpProtocol: aws.String(proto),
+				FromPort:   aws.Int64(from),
+				ToPort:     aws.Int64(to),
+				Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String(ip6Range)}},
+			})
+		}
+	}
 
 	// we are only adding ports when the group is rancher-nodes
 	if *group.GroupName == defaultSecurityGroup && hasTagKey(group.Tags, machineSecurityGroupName) {
-		if _, ok := hasPortsInbound["22/tcp"]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(sshPort),
-				ToPort:     aws.Int64(sshPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", dockerPort)]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(dockerPort),
-				ToPort:     aws.Int64(dockerPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", rancherWebhookPort)]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(rancherWebhookPort),
-				ToPort:     aws.Int64(rancherWebhookPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		// kubeapi
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", kubeApiPort)]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(kubeApiPort),
-				ToPort:     aws.Int64(kubeApiPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
+		addDualStack("tcp", sshPort, sshPort)
+		addDualStack("tcp", dockerPort, dockerPort)
+		addDualStack("tcp", rancherWebhookPort, rancherWebhookPort)
+		addDualStack("tcp", kubeApiPort, kubeApiPort)
+		addDualStack("tcp", nodePorts[0], nodePorts[1])
+		addDualStack("udp", nodePorts[0], nodePorts[1])
+		//  nginx ingress
+		addDualStack("tcp", httpPort, httpPort)
+		addDualStack("tcp", httpsPort, httpsPort)
 
 		// rke2 supervisor
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", supervisorPort)]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", supervisorPort)]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(supervisorPort),
@@ -1432,7 +1527,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// etcd
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", etcdPorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", etcdPorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(etcdPorts[0]),
@@ -1446,7 +1541,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// vxlan
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/udp", vxlanPorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/udp", vxlanPorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("udp"),
 				FromPort:   aws.Int64(vxlanPorts[0]),
@@ -1460,7 +1555,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// typha
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", typhaPorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", typhaPorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(typhaPorts[0]),
@@ -1474,7 +1569,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// flannel
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/udp", flannelPorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/udp", flannelPorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("udp"),
 				FromPort:   aws.Int64(flannelPorts[0]),
@@ -1488,7 +1583,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// others
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", otherKubePorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", otherKubePorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(otherKubePorts[0]),
@@ -1502,7 +1597,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// kube proxy
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", kubeProxyPorts[0])]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", kubeProxyPorts[0])]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(kubeProxyPorts[0]),
@@ -1516,7 +1611,7 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		}
 
 		// node exporter
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", nodeExporter)]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", nodeExporter)]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(nodeExporter),
@@ -1529,46 +1624,8 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 			})
 		}
 
-		// nodePorts
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", nodePorts[0])]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(nodePorts[0]),
-				ToPort:     aws.Int64(nodePorts[1]),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/udp", nodePorts[0])]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("udp"),
-				FromPort:   aws.Int64(nodePorts[0]),
-				ToPort:     aws.Int64(nodePorts[1]),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		// nginx ingress
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", httpPort)]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(httpPort),
-				ToPort:     aws.Int64(httpPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", httpsPort)]; !ok {
-			inboundPerms = append(inboundPerms, &ec2.IpPermission{
-				IpProtocol: aws.String("tcp"),
-				FromPort:   aws.Int64(httpsPort),
-				ToPort:     aws.Int64(httpsPort),
-				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
-			})
-		}
-
 		// calico additional port: https://docs.projectcalico.org/getting-started/openstack/requirements#network-requirements
-		if _, ok := hasPortsInbound[fmt.Sprintf("%d/tcp", calicoPort)]; !ok {
+		if _, ok := hasV4Inbound[fmt.Sprintf("%d/tcp", calicoPort)]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String("tcp"),
 				FromPort:   aws.Int64(calicoPort),
@@ -1588,7 +1645,10 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 		if err != nil {
 			return nil, fmt.Errorf("invalid port number %s: %s", port, err)
 		}
-		if _, ok := hasPortsInbound[fmt.Sprintf("%s/%s", port, protocol)]; !ok {
+
+		key := fmt.Sprintf("%s/%s", port, protocol)
+		// v4
+		if _, ok := hasV4Inbound[key]; !ok {
 			inboundPerms = append(inboundPerms, &ec2.IpPermission{
 				IpProtocol: aws.String(protocol),
 				FromPort:   aws.Int64(portNum),
@@ -1596,9 +1656,18 @@ func (d *Driver) configureSecurityGroupPermissions(group *ec2.SecurityGroup) ([]
 				IpRanges:   []*ec2.IpRange{{CidrIp: aws.String(ipRange)}},
 			})
 		}
+		// v6
+		if _, ok := hasV6Inbound[key]; !ok {
+			inboundPerms = append(inboundPerms, &ec2.IpPermission{
+				IpProtocol: aws.String(protocol),
+				FromPort:   aws.Int64(portNum),
+				ToPort:     aws.Int64(portNum),
+				Ipv6Ranges: []*ec2.Ipv6Range{{CidrIpv6: aws.String(ip6Range)}},
+			})
+		}
 	}
 
-	log.Debugf("configuring security group authorization for %s", ipRange)
+	log.Debugf("configuring security group authorization for IPv4 %s and IPv6 %s", ipRange, ip6Range)
 
 	return inboundPerms, nil
 }
