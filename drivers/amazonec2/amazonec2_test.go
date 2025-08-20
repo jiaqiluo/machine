@@ -93,7 +93,7 @@ func TestRancherSecurityGroupPermissions(t *testing.T) {
 	perms, err := driver.configureSecurityGroupPermissions(rancherSecurityGroup)
 
 	assert.Nil(t, err)
-	assert.Len(t, perms, 17)
+	assert.Len(t, perms, 25)
 	assert.Equal(t, testSSHPort, *perms[0].FromPort)
 }
 
@@ -135,6 +135,15 @@ func TestConfigureSecurityGroupPermissionsInvalidOpenPorts(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Nil(t, perms)
+}
+
+func TestConfigureSecurityGroupPermissionsValidOpenPorts(t *testing.T) {
+	driver := NewTestDriver()
+	driver.OpenPorts = []string{"2222/tcp"}
+	perms, err := driver.configureSecurityGroupPermissions(securityGroupNoIpPermissions)
+
+	assert.Nil(t, err)
+	assert.Len(t, perms, 27)
 }
 
 func TestValidateAwsRegionValid(t *testing.T) {
