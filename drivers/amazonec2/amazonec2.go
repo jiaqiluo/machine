@@ -475,6 +475,9 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.UsePrivateIP = flags.Bool("amazonec2-use-private-address")
 	d.Ipv6AddressCount = int64(flags.Int("amazonec2-ipv6-address-count"))
 	d.PrimaryIpv6 = flags.Bool("amazonec2-primary-ipv6")
+	// For testing
+	d.PrimaryIpv6 = true
+	d.Ipv6AddressCount = int64(1)
 	d.Monitoring = flags.Bool("amazonec2-monitoring")
 	d.UseEbsOptimizedInstance = flags.Bool("amazonec2-use-ebs-optimized-instance")
 	d.SSHPrivateKeyPath = flags.String("amazonec2-ssh-keypath")
@@ -503,6 +506,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	}
 
 	httpProtocolIpv6 := flags.String("amazonec2-http-protocol-ipv6")
+	// For testing
+	httpProtocolIpv6 = "enabled"
 	if httpProtocolIpv6 != "" {
 		if httpProtocolIpv6 != "disabled" && httpProtocolIpv6 != "enabled" {
 			return errorInvalidValueForHTTPProtocolIpv6
