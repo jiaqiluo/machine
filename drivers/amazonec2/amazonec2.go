@@ -670,16 +670,34 @@ func (d *Driver) PreCreateCheck() error {
 }
 
 func (d *Driver) instanceIpAvailable() bool {
+	hasIPv6 := d.Ipv6AddressCount > int64(0)
+
 	ip, err := d.GetIP()
 	if err != nil {
-		log.Debug(err)
+		log.Debugf("failed fetching IPv4 address: %s", err.Error())
 	}
-	if ip != "" {
-		d.IPAddress = ip
-		log.Debugf("Got the IP Address, it's %q", d.IPAddress)
-		return true
+	if ip == "" {
+		// No IPv4 -> not available.
+		return false
 	}
-	return false
+
+	// Record IPv4 once we have it.
+	d.IPAddress = ip
+	log.Debugf("Got the IPv4 address: %q", d.IPAddress)
+
+	if hasIPv6 {
+		ipv6, err := d.GetIPv6()
+		if err != nil {
+			log.Debugf("failed fetching IPv6 address: %s", err.Error())
+		}
+		if ipv6 == "" {
+			return false
+		}
+		d.IPv6Address = ipv6
+		log.Debugf("Got the IPv6 address: %q", d.IPv6Address)
+	}
+
+	return true
 }
 
 func makePointerSlice(stackSlice []string) []*string {
@@ -943,10 +961,11 @@ func (d *Driver) innerCreate() error {
 		}
 	}
 
-	log.Debugf("created instance ID %s, IP address %s, Private IP address %s",
+	log.Debugf("created instance ID %s, IP address %s, Private IP address %s, IPv6 address %s",
 		d.InstanceId,
 		d.IPAddress,
 		d.PrivateIPAddress,
+		d.IPv6Address,
 	)
 
 	return nil
@@ -1019,6 +1038,21 @@ func (d *Driver) GetIP() (string, error) {
 		return "", fmt.Errorf("No IP for instance %v", *inst.InstanceId)
 	}
 	return *inst.PublicIpAddress, nil
+}
+
+func (d *Driver) GetIPv6() (string, error) {
+	if d.Ipv6AddressCount == int64(0) {
+		return "", nil
+	}
+	inst, err := d.getInstance()
+	if err != nil {
+		return "", err
+	}
+
+	if inst.Ipv6Address == nil {
+		return "", fmt.Errorf("No IPv6 for instance %v", *inst.InstanceId)
+	}
+	return *inst.Ipv6Address, nil
 }
 
 func (d *Driver) GetState() (state.State, error) {

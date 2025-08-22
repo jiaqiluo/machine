@@ -15,6 +15,7 @@ const (
 // of fields and functions.
 type BaseDriver struct {
 	IPAddress      string
+	IPv6Address    string
 	MachineName    string
 	SSHUser        string
 	SSHPort        int
