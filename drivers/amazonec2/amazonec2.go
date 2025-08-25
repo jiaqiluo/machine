@@ -156,6 +156,10 @@ type Driver struct {
 
 	// The number of IPv6 addresses to assign to the network interface.
 	Ipv6AddressCount int64
+
+	// Indicates whether to assign only an IPv6 address to instances launched in a VPC.
+	// Useful when the VPC or subnet is configured as IPv6-only.
+	Ipv6AddressOnly bool
 }
 
 func (d *Driver) GetCreateFlags() []mcnflag.Flag {
@@ -354,6 +358,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Indicates whether to assign a public IPv6 address to an instance you launch in a VPC.",
 			EnvVar: "AWS_PRIMARY_IPV6",
 		},
+		mcnflag.BoolFlag{
+			Name:   "amazonec2-ipv6-address-only",
+			Usage:  "Indicates whether to use only IPv6 address to an instance you launch in a VPC.",
+			EnvVar: "AWS_IPV6_ADDRESS_ONLY",
+		},
 	}
 }
 
@@ -473,6 +482,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHPort = 22
 	d.PrivateIPOnly = flags.Bool("amazonec2-private-address-only")
 	d.UsePrivateIP = flags.Bool("amazonec2-use-private-address")
+	d.Ipv6AddressOnly = flags.Bool("amazonec2-ipv6-address-only")
 	d.Ipv6AddressCount = int64(flags.Int("amazonec2-ipv6-address-count"))
 	d.PrimaryIpv6 = flags.Bool("amazonec2-primary-ipv6")
 	// For testing
@@ -670,22 +680,21 @@ func (d *Driver) PreCreateCheck() error {
 }
 
 func (d *Driver) instanceIpAvailable() bool {
-	hasIPv6 := d.Ipv6AddressCount > int64(0)
-
-	ip, err := d.GetIP()
-	if err != nil {
-		log.Debugf("failed fetching IPv4 address: %s", err.Error())
+	if !d.Ipv6AddressOnly {
+		ip, err := d.GetIP()
+		if err != nil {
+			log.Debugf("failed fetching IPv4 address: %s", err.Error())
+		}
+		if ip == "" {
+			// No IPv4 -> not available.
+			return false
+		}
+		// Record IPv4 once we have it.
+		d.IPAddress = ip
+		log.Debugf("Got the IPv4 address: %q", d.IPAddress)
 	}
-	if ip == "" {
-		// No IPv4 -> not available.
-		return false
-	}
 
-	// Record IPv4 once we have it.
-	d.IPAddress = ip
-	log.Debugf("Got the IPv4 address: %q", d.IPAddress)
-
-	if hasIPv6 {
+	if d.Ipv6AddressCount > int64(0) {
 		ipv6, err := d.GetIPv6()
 		if err != nil {
 			log.Debugf("failed fetching IPv6 address: %s", err.Error())
@@ -773,11 +782,17 @@ func (d *Driver) innerCreate() error {
 
 	bdmList := d.updateBDMList()
 
+	// We cannot assign public ipv4 address or carrier ip4 address in ipv6-only subnet
+	associatePublicIpAddress := !d.PrivateIPOnly
+	if d.Ipv6AddressOnly {
+		associatePublicIpAddress = false
+	}
+
 	netSpecs := []*ec2.InstanceNetworkInterfaceSpecification{{
 		DeviceIndex:              aws.Int64(0), // eth0
 		Groups:                   makePointerSlice(d.securityGroupIds()),
 		SubnetId:                 &d.SubnetId,
-		AssociatePublicIpAddress: aws.Bool(!d.PrivateIPOnly),
+		AssociatePublicIpAddress: aws.Bool(associatePublicIpAddress),
 		PrimaryIpv6:              aws.Bool(d.PrimaryIpv6),
 		Ipv6AddressCount:         aws.Int64(d.Ipv6AddressCount),
 	}}
@@ -945,6 +960,7 @@ func (d *Driver) innerCreate() error {
 		d.PrivateIPAddress = *instance.PrivateIpAddress
 	}
 
+	log.Debug("waiting for instance to be in the running state")
 	if err := d.waitForInstance(); err != nil {
 		return err
 	}
@@ -961,7 +977,7 @@ func (d *Driver) innerCreate() error {
 		}
 	}
 
-	log.Debugf("created instance ID %s, IP address %s, Private IP address %s, IPv6 address %s",
+	log.Debugf("created instance ID %s, Public IPv4 address %s, Private IPv4 address %s, IPv6 address %s",
 		d.InstanceId,
 		d.IPAddress,
 		d.PrivateIPAddress,
@@ -1000,9 +1016,15 @@ func (d *Driver) GetURL() (string, error) {
 		return "", err
 	}
 
+	// prefer to use IPv4 address, and try IPv6 address when IPv4 is unavailable
 	ip, err := d.GetIP()
 	if err != nil {
-		return "", err
+		log.Debugf("error getting IPv4 address: %s", err)
+		log.Debug("getting IPv6 address")
+		ip, err = d.GetIPv6()
+		if err != nil {
+			return "", fmt.Errorf("error getting IPv6 address: %s", err)
+		}
 	}
 	if ip == "" {
 		return "", nil
@@ -1022,20 +1044,20 @@ func (d *Driver) GetIP() (string, error) {
 
 	if d.PrivateIPOnly {
 		if inst.PrivateIpAddress == nil {
-			return "", fmt.Errorf("No private IP for instance %v", *inst.InstanceId)
+			return "", fmt.Errorf("no private IPv4 address for instance %v", *inst.InstanceId)
 		}
 		return *inst.PrivateIpAddress, nil
 	}
 
 	if d.UsePrivateIP {
 		if inst.PrivateIpAddress == nil {
-			return "", fmt.Errorf("No private IP for instance %v", *inst.InstanceId)
+			return "", fmt.Errorf("no private IPv4 address for instance %v", *inst.InstanceId)
 		}
 		return *inst.PrivateIpAddress, nil
 	}
 
 	if inst.PublicIpAddress == nil {
-		return "", fmt.Errorf("No IP for instance %v", *inst.InstanceId)
+		return "", fmt.Errorf("no public IPv4 address for instance %v", *inst.InstanceId)
 	}
 	return *inst.PublicIpAddress, nil
 }
@@ -1050,7 +1072,7 @@ func (d *Driver) GetIPv6() (string, error) {
 	}
 
 	if inst.Ipv6Address == nil {
-		return "", fmt.Errorf("No IPv6 for instance %v", *inst.InstanceId)
+		return "", fmt.Errorf("no IPv6 for instance %v", *inst.InstanceId)
 	}
 	return *inst.Ipv6Address, nil
 }
@@ -1081,6 +1103,9 @@ func (d *Driver) GetState() (state.State, error) {
 
 func (d *Driver) GetSSHHostname() (string, error) {
 	// TODO: use @nathanleclaire retry func here (ehazlett)
+	if d.Ipv6AddressOnly {
+		return d.GetIPv6()
+	}
 	return d.GetIP()
 }
 

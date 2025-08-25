@@ -44,6 +44,13 @@ func (d *BaseDriver) GetIP() (string, error) {
 	return d.IPAddress, nil
 }
 
+func (d *BaseDriver) GetIPv6() (string, error) {
+	if d.IPv6Address == "" {
+		return "", errors.New("IPv6 address is not set")
+	}
+	return d.IPv6Address, nil
+}
+
 // GetSSHKeyPath returns the ssh key path
 func (d *BaseDriver) GetSSHKeyPath() string {
 	if d.SSHKeyPath == "" {
