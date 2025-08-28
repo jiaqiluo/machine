@@ -73,9 +73,16 @@ func ConfigureAuth(p Provisioner) error {
 	org := mcnutils.GetUsername() + "." + machineName
 	bits := 2048
 
+	// prefer to use IPv4 address, and try IPv6 address when IPv4 is unavailable
 	ip, err := driver.GetIP()
 	if err != nil {
-		return err
+		log.Debugf("error getting IPv4 address: %s", err)
+		log.Debug("getting IPv6 address")
+		ip, err = driver.GetIPv6()
+		if err != nil {
+			log.Debugf("error getting IPv6 address: %s", err)
+			return err
+		}
 	}
 
 	log.Info("Copying certs to the local machine directory...")

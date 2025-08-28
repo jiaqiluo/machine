@@ -298,17 +298,21 @@ func (d *Driver) Create() error {
 			}
 		}
 
-		if d.IPAddress != "" && (!d.PrivateNetworking || d.PrivateIPAddress != "") {
+		// IPv6
+		d.IPv6Address, _ = newDroplet.PublicIPv6()
+
+		if d.IPAddress != "" && (!d.PrivateNetworking || d.PrivateIPAddress != "") && (!d.IPv6 || d.IPv6Address != "") {
 			break
 		}
 
 		time.Sleep(5 * time.Second)
 	}
 
-	log.Debugf("Created droplet ID %d, IP address %s, Private IP address %s",
+	log.Debugf("Created droplet ID %d, IP address %s, Private IP address %s, IPv6 address %s ",
 		newDroplet.ID,
 		d.IPAddress,
-		d.PrivateIPAddress)
+		d.PrivateIPAddress,
+		d.IPv6Address)
 
 	return nil
 }

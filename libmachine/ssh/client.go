@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
@@ -338,8 +339,19 @@ func NewExternalClient(sshBinaryPath, user, host string, port int, auth *Auth) (
 		BinaryPath: sshBinaryPath,
 	}
 	var args []string
+	var hostURL string
+	ipAddr, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil, err
+	}
+	if ipAddr.Is6() {
+		hostURL = fmt.Sprintf("http://[%s]", host)
+	} else {
+		hostURL = fmt.Sprintf("http://%s", host)
+	}
+
 	// http proxy should be used for the SSH connection
-	proxy, err := util.GetProxyURL("http://" + host)
+	proxy, err := util.GetProxyURL(hostURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get the http proxy for the exernal client: %v", err)
 	}
@@ -353,6 +365,10 @@ func NewExternalClient(sshBinaryPath, user, host string, port int, auth *Auth) (
 		args = append(baseSSHArgs, "-o", fmt.Sprintf(SSHProxyArg, ncBinaryPath, proxy_url), fmt.Sprintf("%s@%s", user, host))
 	} else {
 		args = append(baseSSHArgs, fmt.Sprintf("%s@%s", user, host))
+	}
+
+	if ipAddr.Is6() {
+		args = append(args, "-6")
 	}
 
 	// If no identities are explicitly provided, also look at the identities
