@@ -151,13 +151,17 @@ type Driver struct {
 	// Options: enabled, disabled
 	HttpProtocolIpv6 string
 
-	// Indicates whether to assign a public IPv6 address to an instance you launch in a VPC.
-	PrimaryIpv6 bool
+	// Indicates whether the instance’s first assigned IPv6 address is set as the primary IPv6 address.
+	// Enable this option if the instance requires a stable, persistent IPv6 address.
+	// This option does not affect whether IPv6 addresses are assigned to the instance.
+	// For more information, see EnablePrimaryIpv6 on
+	// https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_RunInstances.html
+	EnablePrimaryIpv6 bool
 
 	// The number of IPv6 addresses to assign to the network interface.
 	Ipv6AddressCount int64
 
-	// Indicates whether to assign only an IPv6 address to instances launched in a VPC.
+	// Indicates whether the instance has only IPv6 address.
 	// Useful when the VPC or subnet is configured as IPv6-only.
 	Ipv6AddressOnly bool
 }
@@ -354,13 +358,15 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Value:  0,
 		},
 		mcnflag.BoolFlag{
-			Name:   "amazonec2-primary-ipv6",
-			Usage:  "Indicates whether to assign a public IPv6 address to an instance you launch in a VPC.",
-			EnvVar: "AWS_PRIMARY_IPV6",
+			Name: "amazonec2-enable-primary-ipv6",
+			Usage: "Indicates whether the first IPv6 address assigned to the instance should be marked as the primary IPv6 address." +
+				" Enable this option if the instance requires a stable, non-changing IPv6 address." +
+				" This option does not affect whether IPv6 addresses are assigned to the instance.",
+			EnvVar: "AWS_ENABLE_PRIMARY_IPV6",
 		},
 		mcnflag.BoolFlag{
 			Name:   "amazonec2-ipv6-address-only",
-			Usage:  "Indicates whether to use only IPv6 address to an instance you launch in a VPC.",
+			Usage:  "Indicates whether the instance has only IPv6 address. Useful when the VPC or subnet is configured as IPv6-only.",
 			EnvVar: "AWS_IPV6_ADDRESS_ONLY",
 		},
 	}
@@ -484,7 +490,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.UsePrivateIP = flags.Bool("amazonec2-use-private-address")
 	d.Ipv6AddressOnly = flags.Bool("amazonec2-ipv6-address-only")
 	d.Ipv6AddressCount = int64(flags.Int("amazonec2-ipv6-address-count"))
-	d.PrimaryIpv6 = flags.Bool("amazonec2-primary-ipv6")
+	d.EnablePrimaryIpv6 = flags.Bool("amazonec2-enable-primary-ipv6")
 	d.Monitoring = flags.Bool("amazonec2-monitoring")
 	d.UseEbsOptimizedInstance = flags.Bool("amazonec2-use-ebs-optimized-instance")
 	d.SSHPrivateKeyPath = flags.String("amazonec2-ssh-keypath")
@@ -777,7 +783,7 @@ func (d *Driver) innerCreate() error {
 
 	bdmList := d.updateBDMList()
 
-	// We cannot assign public ipv4 address or carrier ip4 address in ipv6-only subnet
+	// We cannot assign public IPv4 address or carrier IPv4 address in IPv6-only subnet
 	associatePublicIpAddress := !d.PrivateIPOnly
 	if d.Ipv6AddressOnly {
 		associatePublicIpAddress = false
@@ -788,7 +794,7 @@ func (d *Driver) innerCreate() error {
 		Groups:                   makePointerSlice(d.securityGroupIds()),
 		SubnetId:                 &d.SubnetId,
 		AssociatePublicIpAddress: aws.Bool(associatePublicIpAddress),
-		PrimaryIpv6:              aws.Bool(d.PrimaryIpv6),
+		PrimaryIpv6:              aws.Bool(d.EnablePrimaryIpv6),
 		Ipv6AddressCount:         aws.Int64(d.Ipv6AddressCount),
 	}}
 
