@@ -18,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/rancher/machine/drivers/driverutil"
@@ -409,6 +410,8 @@ func (d *Driver) buildClient() Ec2Client {
 		config = config.WithEndpoint(d.Endpoint)
 		config = config.WithDisableSSL(d.DisableSSL)
 	}
+	// use the dual stack endpoint to support IPv6 and IPv4 at the same time
+	config.UseDualStackEndpoint = endpoints.DualStackEndpointStateEnabled
 	return ec2.New(session.New(config))
 }
 
